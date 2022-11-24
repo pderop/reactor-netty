@@ -618,6 +618,18 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 	}
 
 	@Override
+	protected void onInboundCancel() {
+		if (isInboundDisposed()) {
+			return;
+		}
+
+		if (log.isDebugEnabled()) {
+			log.debug(format(channel(), "Http server inbound stream cancelled. Closing socket."));
+		}
+		channel().close();
+	}
+
+	@Override
 	protected void afterMarkSentHeaders() {
 		if (HttpResponseStatus.NOT_MODIFIED.equals(status())) {
 			responseHeaders.remove(HttpHeaderNames.TRANSFER_ENCODING)

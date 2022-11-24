@@ -106,6 +106,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.reactivestreams.Publisher;
+import org.reactivestreams.Subscription;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.SignalType;
@@ -3224,5 +3225,51 @@ class HttpServerTests extends BaseHttpTest {
 
 		// double check if the server has sent its close_notify
 		assertThat(latch.await(40, TimeUnit.SECONDS)).as("latch await").isTrue();
+	}
+
+	/**
+	 * A client socket should be closed when the server cancels the request body flux before it is fully consumed.
+	 */
+	@Test
+	void testHttpServerCancelled() throws InterruptedException {
+		AtomicReference<Subscription> subscription = new AtomicReference<>();
+		CountDownLatch latchCancel = new CountDownLatch(1);
+
+		disposableServer = createServer()
+				.wiretap(true)
+				.handle((req, res) -> {
+					res.chunkedTransfer(false);
+					return req.receive()
+							.doOnSubscribe(s -> {
+								subscription.set(s);
+							})
+							.doOnNext(b -> {
+								int msg = Integer.parseInt(b.toString(Charset.defaultCharset()));
+								if (msg == 2) {
+									subscription.get().cancel();
+									latchCancel.countDown();
+								}
+							})
+							.log("server")
+							.then(res.status(200).send());
+				})
+				.bindNow();
+
+		Flux<ByteBuf> data = Flux.range(0, 3)
+				.map(n -> Unpooled.wrappedBuffer(Integer.toString(n).getBytes(Charset.defaultCharset())))
+				.delayElements(Duration.ofMillis(10));
+
+		createClient(disposableServer::address)
+				.wiretap(true)
+				.post()
+				.send(data)
+				.uri("/")
+				.responseContent()
+				.aggregate()
+				.as(StepVerifier::create)
+				.expectErrorMatches(t -> t instanceof IOException && t.getMessage().equals("Connection reset by peer"))
+				.verify(Duration.ofSeconds(40));
+
+		assertThat(latchCancel.await(40, TimeUnit.SECONDS)).as("latchCancel await").isTrue();
 	}
 }
